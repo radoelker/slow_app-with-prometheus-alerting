@@ -1,0 +1,5 @@
+app/node_modules
+app/.DS_Store
+app/server.log
+app/.env
+alertmanager/smtp_password.secret

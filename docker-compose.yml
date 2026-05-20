@@ -1,0 +1,146 @@
+services:
+
+  slow-api:
+    build: ./app
+    container_name: slow-api
+    environment:
+      - DESIRED_PATH=/work
+      - PORT=8080
+      - NUMBER=1
+    ports:
+      - "8081:8080"
+    networks:
+      - slow-api-net
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  slow-api_2:
+    build: ./app
+    container_name: slow-api_2
+    environment:
+      - DESIRED_PATH=/work
+      - PORT=8080
+      - NUMBER=2
+    ports:
+      - "8082:8080"
+    networks:
+      - slow-api-net
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  slow-api_3:
+    build: ./app
+    container_name: slow-api_3
+    environment:
+      - DESIRED_PATH=/work
+      - PORT=8080
+      - NUMBER=3
+    ports:
+      - "8083:8080"
+    networks:
+      - slow-api-net
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  # ── Load Balancer ──────────────────────────────────────────────────────────
+  nginx-lb:
+    image: nginx:alpine
+    container_name: nginx-lb
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8000:80"
+    depends_on:
+      - slow-api
+      - slow-api_2
+      - slow-api_3
+    networks:
+      - slow-api-net
+ 
+# ── NGINX Prometheus Exporter ───────────────────────────────────────────────
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:latest
+    container_name: nginx-exporter
+    command:
+      - -nginx.scrape-uri=http://nginx-lb/nginx_status
+    depends_on:
+      - nginx-lb
+    networks:
+      - slow-api-net
+ 
+  # ── cAdvisor (container metrics) ───────────────────────────────────────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    privileged: true                  # remove if your host/daemon forbids it
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - slow-api-net
+ 
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro   # optional alert-rules dir
+    ports:
+      - "9090:9090"
+    depends_on:
+      - nginx-exporter
+      - cadvisor
+    networks:
+      - slow-api-net
+ 
+  # ── Alertmanager ───────────────────────────────────────────────────────────
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+#    env_file:
+#      - ./alertmanager/alertmanager.env  # smtp variable replacement failed
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/smtp_password.secret:/etc/alertmanager/smtp_password.secret:ro
+    ports:
+      - "9093:9093"
+    networks:
+      - slow-api-net
+ 
+  # ── Load Generator ─────────────────────────────────────────────────────────
+  loadgen:
+    image: alpine:latest
+    container_name: loadgen
+    depends_on:
+      - nginx-lb
+    networks:
+      - slow-api-net
+    # Sends ~10 req/s to the app path; tweak RATE and URL to taste
+    environment:
+      - TARGET=http://nginx-lb/work
+      - RATE=20           # requests per second
+    command: >
+      sh -c "apk add --no-cache curl &&
+             echo 'Load generator started — hitting $$TARGET at $$RATE req/s' &&
+             while true; do
+               for i in $$(seq 1 $$RATE); do
+                 curl -sf $$TARGET > /dev/null &
+               done;
+               sleep 1;
+             done"
+    restart: unless-stopped
+ 
+
+networks:
+  slow-api-net:
+    driver: bridge
+
